@@ -61,7 +61,31 @@ def merge_entity(label: str, name: str, extra_props: dict | None = None) -> tupl
     #    extra_props key.
     # 3. Build the params dict including id, name, and every extra_props entry.
     # 4. Return (cypher, params).
-    raise NotImplementedError(
-        "merge_entity is not yet implemented — see the Identity Discipline section "
-        "of the Reading and complete the TODO."
-    )
+    # 1. Compute the structural canonical identifier
+    ent_id = canonical_id(label, name)
+    
+    # Initialize parameters with the basic tracking values
+    params = {
+        "id": ent_id,
+        "name": name
+    }
+    
+    # 2. Safely interpolate domain labels and template property anchors
+    # Label mapping uses string interpolation securely because they are static developer-defined 
+    # system labels (e.g. 'Ingredient'), while user context maps to secure parameter bindings.
+    cypher_parts = [
+        f"MERGE (n:{label.strip()}:Entity {{id: $id}})",
+        "SET n.name = $name"
+    ]
+    
+    # Append dynamic extra properties into literal identifier sequences
+    if extra_props:
+        for key, value in extra_props.items():
+            cypher_parts.append(f"n.{key} = ${key}")
+            params[key] = value
+            
+    # 3. Join structural statement tokens together
+    cypher_string = " ".join(cypher_parts)
+    
+    # 4. Return the constructed Cypher and parameter bindings
+    return cypher_string, params
