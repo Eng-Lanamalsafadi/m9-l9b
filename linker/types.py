@@ -6,6 +6,7 @@ types via the function signatures in linker/link.py and linker/score.py.
 from dataclasses import dataclass
 
 
+
 @dataclass(frozen=True)
 class GoldSpan:
     """A gold-annotated NER span with its expected KG identity.

@@ -38,6 +38,12 @@ NER_LABEL_TO_KG_TYPE: dict[str, set[str]] = {
     # "TECHNIQUE". Refer to data/README.md for the gold-span NER
     # label distribution and to the §2.1 schema labels (Recipe, Cuisine,
     # Ingredient, Author, Technique).
+    "PERSON": {"Author"},
+    "ORG": {"Author"},
+    "GPE": {"Cuisine"},
+    "FOOD": {"Cuisine", "Ingredient"},
+    "INGREDIENT": {"Ingredient"},
+    "TECHNIQUE": {"Technique"}
 }
 
 
@@ -76,7 +82,92 @@ def disambiguate(
     # 5. Apply co-occurrence ranking against doc_resolved;
     #    return (winner, "resolved-by-context") when there is a clear winner.
     # 6. Otherwise return (None, "nil-ambiguous").
-    raise NotImplementedError(
-        "disambiguate() is not yet implemented — see the Reading's "
-        "Entity Linking and the Lab guide's Disambiguation Strategy section."
+    # --- 1. Trivial Cases ---
+    if not candidates_:
+        return None, "nil-no-candidates"
+        
+    # Note: If the orchestrator links length-1 candidates before calling disambiguate,
+    # we still safely handle it here as demanded by the function requirements.
+    if len(candidates_) == 1:
+        return candidates_[0], "resolved-unique"
+
+    # Fetch valid target types for the given NER label
+    compatible_types = NER_LABEL_TO_KG_TYPE.get(ner_label, set())
+
+    # --- 2. Direct Type Filter ---
+    type_filtered_candidates = [
+        c for c in candidates_
+        if any(lbl in compatible_types for lbl in c["labels"])
+    ]
+    if len(type_filtered_candidates) == 1:
+        return type_filtered_candidates[0], "resolved-by-type"
+
+    # --- 3. Hierarchical Traversal via [:SUBCLASS_OF*0..] ---
+    hierarchy_filtered_candidates = []
+    
+    hierarchy_query = """
+    MATCH (c:Entity {id: $cand_id})
+    MATCH (c)-[:SUBCLASS_OF*0..]->(ancestor:Entity)
+    RETURN collect(labels(ancestor)) AS ancestor_labels
+    """
+    
+    with driver.session() as session:
+        for cand in candidates_:
+            res = session.run(hierarchy_query, cand_id=cand["id"])
+            record = res.single()
+            if record:
+                # Flatten the collected list of label arrays into a single set
+                all_ancestor_labels = {
+                    lbl 
+                    for labels_list in record["ancestor_labels"] 
+                    for lbl in labels_list
+                }
+                if any(lbl in compatible_types for lbl in all_ancestor_labels):
+                    hierarchy_filtered_candidates.append(cand)
+
+    if len(hierarchy_filtered_candidates) == 1:
+        return hierarchy_filtered_candidates[0], "resolved-by-hierarchy"
+
+    # --- 4. Co-occurrence Context Filter ---
+    # Evaluate candidates that survived previous structural/hierarchy pruning. 
+    # If the hierarchy check left us empty-handed, fallback to evaluating all original candidates.
+    surviving_candidates = (
+        hierarchy_filtered_candidates if hierarchy_filtered_candidates else candidates_
     )
+    
+    # Extract predicted node IDs from already-resolved LinkResult objects
+    resolved_ids = [
+        res.predicted_node_id 
+        for res in doc_resolved 
+        if getattr(res, "predicted_node_id", None) is not None
+    ]
+    
+    if resolved_ids and surviving_candidates:
+        context_query = """
+        MATCH (c:Entity {id: $cand_id})-[]-(neighbor:Entity)
+        WHERE neighbor.id IN $resolved_ids
+        RETURN count(neighbor) AS overlap
+        """
+        
+        best_cand = None
+        max_overlap = -1
+        is_tie = False
+        
+        with driver.session() as session:
+            for cand in surviving_candidates:
+                res = session.run(context_query, cand_id=cand["id"], resolved_ids=resolved_ids)
+                record = res.single()
+                overlap = record["overlap"] if record else 0
+                
+                if overlap > max_overlap:
+                    max_overlap = overlap
+                    best_cand = cand
+                    is_tie = False
+                elif overlap == max_overlap:
+                    is_tie = True
+                    
+        if max_overlap > 0 and not is_tie:
+            return best_cand, "resolved-by-context"
+
+    # --- 5. Abstain (Ambiguous) ---
+    return None, "nil-ambiguous"

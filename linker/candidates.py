@@ -41,7 +41,28 @@ def candidates(driver, surface: str) -> list[dict]:
     # 2. For each returned row, build a dict with keys id, name, labels.
     #    Drop the "Entity" label from labels so callers only see domain labels.
     # 3. Return the list (may be empty).
-    raise NotImplementedError(
-        "candidates() is not yet implemented — see the Reading's "
-        "Candidate Generation worked example and the Lab guide."
-    )
+    # Parameterized Cypher string to enforce safe query handling
+    query = """
+    MATCH (n:Entity)
+    WHERE toLower(n.name) = toLower($surface)
+    RETURN n.id AS id, n.name AS name, labels(n) AS labels
+    """
+    
+    candidate_list = []
+    
+    # 1. Open a session and execute query using parameter binding
+    with driver.session() as session:
+        result = session.run(query, surface=surface)
+        
+        # 2. Extract results and strip the structural "Entity" label
+        for record in result:
+            domain_labels = [lbl for lbl in record["labels"] if lbl != "Entity"]
+            
+            candidate_list.append({
+                "id": record["id"],
+                "name": record["name"],
+                "labels": domain_labels
+            })
+            
+    # 3. Return the populated or empty list
+    return candidate_list

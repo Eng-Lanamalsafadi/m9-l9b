@@ -39,7 +39,54 @@ def link(
     #         from the chosen candidate dict, or None on NIL).
     #      d. Append it to results AND to doc_resolved.
     # 3. Return results.
-    raise NotImplementedError(
-        "link() is not yet implemented — orchestrate candidates -> disambiguate "
-        "per the Lab guide."
-    )
+    # 1. Initialize result trackers
+    results: list[LinkResult] = []
+    doc_resolved: list[LinkResult] = []
+
+    # 2. Iterate spans in document order to build context monotonically
+    for start, end, surface, ner_label in ner_spans:
+        # a. Fetch all potential entity node matches
+        cands = candidates(driver, surface)
+        
+        # Build predictions and map reason tokens as required by the pipeline specs
+        if not cands:
+            res = LinkResult(
+                doc_id=doc_id,
+                start=start,
+                end=end,
+                surface=surface,
+                predicted_node_id=None,
+                predicted_type_label=None,
+                reason="nil-no-candidates"
+            )
+        elif len(cands) == 1:
+            res = LinkResult(
+                doc_id=doc_id,
+                start=start,
+                end=end,
+                surface=surface,
+                predicted_node_id=cands[0]["id"],
+                predicted_type_label=cands[0]["labels"][0], # Extract primary domain label
+                reason="resolved-unique"
+            )
+        else:
+            # b. Disambiguate when multiple candidates exist
+            chosen, reason_token = disambiguate(driver, cands, ner_label, doc_resolved)
+            
+            # c. Construct the LinkResult with chosen candidate parameters or fallback to NIL
+            res = LinkResult(
+                doc_id=doc_id,
+                start=start,
+                end=end,
+                surface=surface,
+                predicted_node_id=chosen["id"] if chosen else None,
+                predicted_type_label=chosen["labels"][0] if chosen else None,
+                reason=reason_token
+            )
+            
+        # d. Append to output results and expand context memory window
+        results.append(res)
+        doc_resolved.append(res)
+        
+    # 3. Return collection of sequential alignments
+    return results
